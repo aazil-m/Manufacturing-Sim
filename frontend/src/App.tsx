@@ -1,30 +1,58 @@
-import React, { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { getState } from "./api";
 import Factory from "./scene/Factory";
 import Controls from "./ui/Controls";
 import Metrics from "./ui/Metrics";
 import type { StateSnapshot } from "./api";
 
+// One point in the history series we’ll chart
+export type HistoryPoint = {
+  t: number;                 // sim timestamp (seconds)
+  throughput: number;        // items/sec
+  items_in_system: number;   // WIP
+  avg_utilization: number;   // 0..1
+};
+
+const HISTORY_MAX = 600; // keep ~10 minutes if WS emits every 1s; trim beyond this
+
 export default function App() {
   const [snapshot, setSnapshot] = useState<StateSnapshot | null>(null);
+  const [history, setHistory] = useState<HistoryPoint[]>([]);
   const [focusedMachineId, setFocusedMachineId] = useState<number | null>(null);
 
   const wsRef = useRef<WebSocket | null>(null);
   const pollRef = useRef<number | null>(null);
 
-  // Direct to backend in dev; same-origin in prod
+  // direct to backend in dev, same-origin in prod
   const wsUrl = useRef(
     import.meta.env.DEV
       ? `${location.protocol === "https:" ? "wss" : "ws"}://localhost:8000/ws/state`
       : `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws/state`
   ).current;
 
-  // ---- polling fallback ------------------------------------------------------
-  const clearPolling = () => {
-    if (pollRef.current) {
-      clearInterval(pollRef.current);
-      pollRef.current = null;
-    }
+  // Central place to apply a new snapshot and append a history point
+  const applySnapshot = (s: StateSnapshot) => {
+    setSnapshot(s);
+
+    const avgUtil =
+      s.machines.length > 0
+        ? s.machines.reduce((acc, m) => acc + (m.utilization ?? 0), 0) / s.machines.length
+        : 0;
+
+    setHistory((prev) => {
+      const next = [
+        ...prev,
+        {
+          t: s.timestamp,
+          throughput: s.throughput, // already items/sec from backend
+          items_in_system: s.items_in_system,
+          avg_utilization: avgUtil,
+        },
+      ];
+      // trim to max length
+      if (next.length > HISTORY_MAX) next.splice(0, next.length - HISTORY_MAX);
+      return next;
+    });
   };
 
   const setPolling = () => {
@@ -32,49 +60,47 @@ export default function App() {
     pollRef.current = window.setInterval(async () => {
       try {
         const s = await getState();
-        setSnapshot(s);
+        applySnapshot(s);
       } catch (e) {
         console.error("poll error", e);
       }
     }, 1000);
   };
 
-  // ---- websocket connect/retry ----------------------------------------------
+  const clearPolling = () => {
+    if (pollRef.current) {
+      clearInterval(pollRef.current);
+      pollRef.current = null;
+    }
+  };
+
   const connectWS = () => {
     try {
-      // guard: don't create multiple sockets
-      if (wsRef.current && (wsRef.current.readyState === WebSocket.OPEN || wsRef.current.readyState === WebSocket.CONNECTING)) {
-        return;
-      }
-
       const ws = new WebSocket(wsUrl);
       wsRef.current = ws;
 
       ws.onopen = () => {
-        // stop polling when socket is up
-        clearPolling();
+        clearPolling(); // stop polling when socket is up
       };
 
       ws.onmessage = (ev) => {
         try {
-          const data = JSON.parse(ev.data) as StateSnapshot;
-          setSnapshot(data);
+          const s = JSON.parse(ev.data) as StateSnapshot;
+          applySnapshot(s);
         } catch (e) {
           console.error("bad ws message", e);
         }
       };
 
       ws.onerror = () => {
-        // fall back to polling
         wsRef.current = null;
-        setPolling();
+        setPolling(); // fallback to polling
       };
 
       ws.onclose = () => {
         wsRef.current = null;
-        // keep UI fresh via polling; try reconnecting shortly
         setPolling();
-        setTimeout(connectWS, 2000);
+        setTimeout(connectWS, 2000); // backoff & reconnect
       };
     } catch (e) {
       console.error("ws connect failed", e);
@@ -82,21 +108,18 @@ export default function App() {
     }
   };
 
-  // ---- bootstrap -------------------------------------------------------------
+  // Initial bootstrap: try WS; also prime once
   useEffect(() => {
     connectWS();
-    // prime once so UI isn't empty while WS connects
-    getState().then(setSnapshot).catch(() => {});
+    getState().then(applySnapshot).catch(() => {});
     return () => {
-      try { wsRef.current?.close(); } catch {}
+      if (wsRef.current) wsRef.current.close();
       clearPolling();
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const isRunning = !!snapshot?.running;
 
-  // ---- styles ----------------------------------------------------------------
   const appStyle: React.CSSProperties = {
     height: "100vh",
     display: "flex",
@@ -129,7 +152,7 @@ export default function App() {
   const refreshOnce = async () => {
     try {
       const s = await getState();
-      setSnapshot(s);
+      applySnapshot(s);
     } catch (e) {
       console.error(e);
     }
@@ -150,7 +173,7 @@ export default function App() {
           <Controls onRefresh={refreshOnce} isRunning={isRunning} />
         </div>
         <div style={{ ...card, flex: "0 0 34%", minWidth: 320 }}>
-          <Metrics snapshot={snapshot} />
+          <Metrics snapshot={snapshot as any} history={history} />
         </div>
       </div>
     </div>
