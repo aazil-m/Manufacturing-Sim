@@ -19,14 +19,27 @@ The simulation runs continuously, showing item movement and live performance met
 manufacturing-sim/
 │
 ├── backend/
-│   ├── main.py               # FastAPI simulation server
-│   ├── requirements.txt      # Backend dependencies
+│ ├── main.py     #FastAPI simulation server with dynamic line editing
+│ ├── requirements.txt     #Backend dependencies
 │
 ├── frontend/
-│   ├── package.json          # React project dependencies
-│   ├── src/                  # React + Three.js visualization code
+│ ├── index.html
+│ ├── package.json     #React project dependencies
+│ ├── vite.config.ts     #Proxy setup for backend communication
+│ ├── src/
+│ │ ├── main.tsx     #React entry point
+│ │ ├── App.tsx     #Layout: Visualization + Controls + Metrics
+│ │ ├── api.ts     #API service layer (REST calls)
+│ │ ├── types.ts     #Shared TypeScript types
+│ │ ├── ui/
+│ │ │ ├── Controls.tsx     #Start/Pause + Dynamic Add/Remove Machine Controls
+│ │ │ └── Metrics.tsx     #Metrics & statistics panel
+│ │ └── scene/
+│ │ ├── Factory.tsx     #Three.js scene (3D visualization)
+│ │ ├── MachineBox.tsx    #Machine cube component
+│ │ └── ItemSphere.tsx    #Moving item component
 │
-└── README.md                 # (this file)
+└── README.md # (this file)
 ```
 
 ---
@@ -128,7 +141,7 @@ Built with **React Three Fiber** (Three.js + React).
 
 ## 🧱 Extensible Features (extra credit ideas)
 
-- Dynamic addition/removal of machines via UI.
+- ✅Dynamic addition/removal of machines via UI.
 - WebSocket live updates instead of polling.
 - Persistent save/load of simulation state.
 - Historical throughput graphs over time.
