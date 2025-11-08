@@ -5,10 +5,7 @@ import ItemSphere from "./ItemSphere";
 import { useMemo, useRef } from "react";
 import { StateSnapshot } from "../types";
 
-// Wider spacing for clearer motion
 const MACHINE_X_SPACING = 6.0;
-// Box is 2 units along X; offset a bit more to avoid touching faces.
-const FACE_OFFSET = 1.15;
 
 function SceneContent({
   snapshot,
@@ -21,7 +18,9 @@ function SceneContent({
 }) {
   const machinePositions = useMemo(() => {
     const m = snapshot?.machines ?? [];
-    return new Map(m.map((mm, idx) => [mm.id, [idx * MACHINE_X_SPACING, 0.5, 0] as [number, number, number]]));
+    return new Map(
+      m.map((mm, idx) => [mm.id, [-8.0 + idx * MACHINE_X_SPACING, 0.5, 0] as [number, number, number]])
+    );
   }, [snapshot]);
 
   const firstMachineId = snapshot?.machines?.[0]?.id ?? null;
@@ -39,54 +38,59 @@ function SceneContent({
     return [last[0] + MACHINE_X_SPACING, 0.5, 0];
   }, [lastMachineId, machinePositions]);
 
-  // Build render lists: tiny translucent queue dots + moving spheres
-  const renderItems = useMemo(() => {
-    if (!snapshot) return { queues: [] as [number, number, number][], moving: [] as [number, number, number][] };
-    const queues: [number, number, number][] = [];
-    const moving: [number, number, number][] = [];
+  // ---- Moving items ONLY: approach (visible) -> inside (hidden) -> emerge (visible) ----
+  const movingItems = useMemo(() => {
+    if (!snapshot) return [] as [number, number, number][];
 
-    // Queues: compact, semi-transparent, offset away from left face
-    snapshot.machines.forEach((m) => {
-      const pos = machinePositions.get(m.id)!;
-      for (let q = 0; q < m.queue; q++) {
-        queues.push([pos[0] - (FACE_OFFSET + 0.3) - q * 0.3, 0.12, 0]);
-      }
-    });
+    const out: [number, number, number][] = [];
+    const APPROACH_FRAC = 0.20; // first 20% of processing shows approach
+    const EMERGE_FRAC   = 0.20; // last 20% shows emerge
+    const Y_LEVEL = 0.35;       // slightly above box top (box top ≈ 1.0)
+    const Y_ARC   = 0.20;       // gentle arch so it's not a flat line
+    const GAP     = 0.9;        // how far before/after the face we render approach/emerge
 
-    // In-progress with face offsets so spheres don't intersect boxes
     snapshot.machines.forEach((m) => {
       const details = m.in_progress_detail ?? [];
       const here = machinePositions.get(m.id)!;
+      // Exact faces of the box (width=2 → half=1)
+      const leftFaceX  = here[0] - 1.0;
+      const rightFaceX = here[0] + 1.0;
 
-      // from:
-      let fromPos: [number, number, number] = [here[0] + FACE_OFFSET, here[1], here[2]];
-      if (m.id === firstMachineId && sourcePos) {
-        // source -> first: start at source
-        fromPos = [sourcePos[0], sourcePos[1], sourcePos[2]];
-      }
+      // Where approach starts
+      const approachStartX =
+        m.id === firstMachineId && sourcePos ? sourcePos[0] : leftFaceX - GAP;
 
-      // to:
-      let toPos: [number, number, number] = m.next
-        ? [ (machinePositions.get(m.next) ?? here)[0] - FACE_OFFSET, here[1], here[2] ]
-        : (m.id === lastMachineId && sinkPos
-            ? [sinkPos[0], sinkPos[1], sinkPos[2]]
-            : [here[0] - FACE_OFFSET, here[1], here[2]]);
+      // Where emerge ends
+      const emergeEndX =
+        m.id === lastMachineId && sinkPos ? sinkPos[0] : rightFaceX + GAP;
 
       details.forEach((d) => {
         const t = Math.min(Math.max(d.progress, 0), 1);
-        const x = fromPos[0] + (toPos[0] - fromPos[0]) * t;
-        const y = 0.22 + 0.8 * Math.sin(t * Math.PI); // smooth arc
-        moving.push([x, y, 0]);
+
+        if (t <= APPROACH_FRAC) {
+          // Approach from left → left face
+          const u = t / APPROACH_FRAC; // 0..1
+          const x = approachStartX + (leftFaceX - approachStartX) * u;
+          const y = Y_LEVEL + Y_ARC * Math.sin(u * Math.PI);
+          out.push([x, y, 0]);
+        } else if (t >= 1 - EMERGE_FRAC) {
+          // Emerge from right face → out to gap/sink
+          const u = (t - (1 - EMERGE_FRAC)) / EMERGE_FRAC; // 0..1
+          const x = rightFaceX + (emergeEndX - rightFaceX) * u;
+          const y = Y_LEVEL + Y_ARC * Math.sin(u * Math.PI);
+          out.push([x, y, 0]);
+        } else {
+          // Inside machine: hidden (do not render a sphere)
+        }
       });
     });
 
-    return { queues, moving };
+    return out;
   }, [snapshot, machinePositions, firstMachineId, lastMachineId, sourcePos, sinkPos]);
 
-  // --- Camera / OrbitControls handling ---
+  // --- Camera / OrbitControls (one-shot tween to focus, then free orbit) ---
   const orbitRef = useRef<any>(null);
 
-  // pick a nice default (2nd machine if present)
   const defaultTarget: [number, number, number] = useMemo(() => {
     if (!snapshot?.machines?.length) return [0, 0.5, 0];
     const midIdx = Math.min(1, snapshot.machines.length - 1);
@@ -94,7 +98,6 @@ function SceneContent({
     return machinePositions.get(midId)!;
   }, [snapshot, machinePositions]);
 
-  // One-shot tween state (so user remains free to move when no tween is active)
   const tweenRef = useRef<{
     active: boolean;
     t: number; // 0..1
@@ -109,11 +112,10 @@ function SceneContent({
     tweenRef.current = { active: true, t: 0, from: current, to };
   };
 
-  // progress tween for ~400ms using a smoothstep
-  useFrame((state, delta) => {
+  useFrame((_, delta) => {
     if (!tweenRef.current.active) return;
     const { from, to } = tweenRef.current;
-    const speed = 3; // larger = quicker
+    const speed = 3;
     tweenRef.current.t = Math.min(1, tweenRef.current.t + delta * speed);
     const u = tweenRef.current.t;
     const s = u * u * (3 - 2 * u); // smoothstep
@@ -125,10 +127,9 @@ function SceneContent({
     orbitRef.current.target.set(x, y, z);
     orbitRef.current.update();
 
-    if (u >= 1) tweenRef.current.active = false; // stop — user is free again
+    if (u >= 1) tweenRef.current.active = false; // free orbit again
   });
 
-  // when user clicks a machine, start a one-shot tween to its position
   const handleSelect = (id: number) => {
     onSelectMachine(id);
     const p = machinePositions.get(id) ?? defaultTarget;
@@ -157,16 +158,8 @@ function SceneContent({
         );
       })}
 
-      {/* Queues: tiny, translucent */}
-      {renderItems.queues.map((p, i) => (
-        <mesh key={`q-${i}`} position={p} scale={[0.24, 0.24, 0.24]}>
-          <sphereGeometry args={[0.2, 16, 16]} />
-          <meshStandardMaterial transparent opacity={0.6} color="#9ca3af" />
-        </mesh>
-      ))}
-
-      {/* Moving items */}
-      {renderItems.moving.map((p, i) => (
+      {/* Visible segments only: approach & emerge */}
+      {movingItems.map((p, i) => (
         <ItemSphere key={`m-${i}`} position={p} />
       ))}
     </>

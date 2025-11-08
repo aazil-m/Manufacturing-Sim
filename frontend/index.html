@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+    <title>Factory Simulation</title>
+    <style>
+      html,body,#root{height:100%;margin:0}
+      .layout{display:grid; grid-template-rows: 1fr auto; height:100%;}
+      .bottom{display:grid; grid-template-columns: 1fr 1fr; gap:12px; padding:12px; border-top:1px solid #e5e7eb;}
+      .panel{border:1px solid #e5e7eb; border-radius:10px; padding:12px;}
+      button{padding:8px 12px; margin-right:8px; cursor:pointer}
+      input{padding:6px 8px; margin-left:6px; width:90px}
+      label{margin-right:10px}
+      table{width:100%; border-collapse:collapse}
+      th,td{border-bottom:1px solid #eee; padding:6px 8px; text-align:left}
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

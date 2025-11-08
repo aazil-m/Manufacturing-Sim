@@ -12,6 +12,8 @@ export type MachineView = {
   takt_time: number;
   completed: number;
   utilization: number;
+  eta?: number | null;
+  starved?: boolean;
 };
 
 export type StateSnapshot = {

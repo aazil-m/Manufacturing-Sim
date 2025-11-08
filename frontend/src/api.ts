@@ -17,6 +17,7 @@ export type StateSnapshot = {
   total_started: number;
   total_completed: number;
   avg_cycle_time: number;
+  running: boolean; // <-- add this
   machines: Array<{
     id: number;
     name: string;
@@ -54,14 +55,16 @@ export async function pauseSim() {
 }
 
 export async function updateMachine(body: Partial<Machine> & { id: number }) {
-  return json(await fetch(`${BASE}/update_machine`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  }));
+  return json(
+    await fetch(`${BASE}/update_machine`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    })
+  );
 }
 
-// NEW: add/remove
+// Dynamic line editing
 export async function addMachine(params: {
   name: string;
   takt_time: number;
@@ -69,17 +72,21 @@ export async function addMachine(params: {
   insert_after_id?: number | null;
   next?: number | null;
 }) {
-  return json(await fetch(`${BASE}/add_machine`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(params),
-  }));
+  return json(
+    await fetch(`${BASE}/add_machine`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(params),
+    })
+  );
 }
 
 export async function removeMachine(id: number) {
-  return json(await fetch(`${BASE}/remove_machine`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ id }),
-  }));
+  return json(
+    await fetch(`${BASE}/remove_machine`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id }),
+    })
+  );
 }
