@@ -124,27 +124,28 @@ Built with **React Three Fiber** (Three.js + React).
   - 🟩 Green – currently processing
   - 🟨 Yellow – queued (waiting items)
   - 🟦 Blue – idle
-- Control panel lets you **start**, **pause**, and **edit machine parameters** in real time.
-- Metrics panel displays live statistics pulled from the `/state` endpoint every second.
+- Control panel lets you **start**, **pause**, **reset** and **edit machine parameters** in real time.
+- Metrics panel displays live statistics pulled from the `/state` endpoint every 5 seconds.
 
 ---
 
 ## 🧮 Design Choices
 
-- **FastAPI + background thread** → clean async simulation loop independent of requests.
-- **Immutable state snapshots** → frontend polling or WebSocket updates stay consistent.
-- **React Three Fiber** → minimal boilerplate 3D rendering integrated into React state.
-- **TypeScript frontend** → safer prop handling and type-checked API integration.
-- **Separation of Concerns** → backend purely logic; frontend purely visualization.
+- **FastAPI + threaded loop** → independent time evolution.
+- **Immutable state snapshots** → consistent WebSocket streaming.
+- **React Three Fiber** → declarative 3D rendering.
+- **WebSockets + 5 s sampling** → smooth updates without clutter.
+- **TypeScript frontend** → safe API integration and prop validation.
+- **Reset Endpoint** → clears all state and history for a fresh run.
 
 ---
 
 ## 🧱 Extensible Features (extra credit ideas)
 
 - ✅Dynamic addition/removal of machines via UI.
-- WebSocket live updates instead of polling.
-- Persistent save/load of simulation state.
-- Historical throughput graphs over time.
+- ✅WebSocket live updates instead of polling.
+- ✅Persistent save/load of simulation state.
+- ✅Historical throughput graphs over time.
 - Multiple production lines or item types.
 
 ---
