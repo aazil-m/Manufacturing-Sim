@@ -1,4 +1,4 @@
-import { Text } from "@react-three/drei";
+import { Billboard, Text } from "@react-three/drei";
 
 export default function MachineBox({
   position, label, color = "#60a5fa"
@@ -9,9 +9,20 @@ export default function MachineBox({
         <boxGeometry args={[2, 1, 2]} />
         <meshStandardMaterial color={color} />
       </mesh>
-      <Text position={[0, 0.9, 0]} fontSize={0.35} anchorX="center" anchorY="bottom">
-        {label}
-      </Text>
+
+      {/* Label: large, billboarded, with an outline */}
+      <Billboard position={[0, 1.1, 0]}>
+        <Text
+          fontSize={0.55}
+          color="#111"
+          outlineWidth={0.02}
+          outlineColor="#ffffff"
+          anchorX="center"
+          anchorY="bottom"
+        >
+          {label}
+        </Text>
+      </Billboard>
     </group>
   );
 }
