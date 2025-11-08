@@ -14,6 +14,7 @@ export type MachineView = {
   utilization: number;
   eta?: number | null;
   starved?: boolean;
+  lane: number;
 };
 
 export type StateSnapshot = {

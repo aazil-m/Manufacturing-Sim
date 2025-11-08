@@ -6,8 +6,6 @@ import {
   updateMachine,
   addMachine,
   removeMachine,
-  saveState,
-  loadState,
 } from "../api";
 
 type Machine = {
@@ -16,41 +14,51 @@ type Machine = {
   takt_time: number;
   buffer: number;
   next: number | null;
+  lane: number;
 };
 
+// Save / Load (unchanged)
+async function saveState() {
+  const r = await fetch("/api/save_state", { method: "POST" });
+  if (!r.ok) throw new Error(await r.text());
+}
+async function loadState() {
+  const r = await fetch("/api/load_state", { method: "POST" });
+  if (!r.ok) throw new Error(await r.text());
+}
+
 export default function Controls({
-  onReset,          // <-- renamed from onRefresh
+  onRefresh,
   isRunning,
 }: {
-  onReset: () => void | Promise<void>;
+  onRefresh: () => void;
   isRunning: boolean;
 }) {
   const [machines, setMachines] = useState<Machine[]>([]);
   const [busy, setBusy] = useState(false);
 
-  // add form state
+  // Add form state
   const [newName, setNewName] = useState("New Machine");
   const [newTakt, setNewTakt] = useState<number>(3);
   const [newBuf, setNewBuf] = useState<number>(1);
+  const [newLane, setNewLane] = useState<number>(0);         // <-- NEW
 
-  // "end" or stringified machine id
+  // Insert position: "end" or machine id (string)
   const [insertAfter, setInsertAfter] = useState<string>("end");
 
   const load = async () => setMachines(await getMachines());
-
-  useEffect(() => {
-    load();
-  }, []);
+  useEffect(() => { load(); }, []);
 
   const onUpdate = async (
     m: Machine,
-    field: "takt_time" | "buffer" | "name",
+    field: "takt_time" | "buffer" | "name" | "lane",      // <-- allow lane update
     val: number | string
   ) => {
     setBusy(true);
     try {
       await updateMachine({ id: m.id, [field]: val } as any);
       await load();
+      onRefresh();
     } finally {
       setBusy(false);
     }
@@ -64,9 +72,11 @@ export default function Controls({
         takt_time: Number(newTakt) || 1,
         buffer: Number(newBuf) || 1,
         insert_after_id: insertAfter === "end" ? null : Number(insertAfter),
+        lane: Number.isFinite(newLane) ? Number(newLane) : 0,   // <-- pass lane
       });
       setNewName("New Machine");
       await load();
+      onRefresh();
     } finally {
       setBusy(false);
     }
@@ -78,6 +88,7 @@ export default function Controls({
     try {
       await removeMachine(m.id);
       await load();
+      onRefresh();
     } finally {
       setBusy(false);
     }
@@ -102,11 +113,7 @@ export default function Controls({
           disabled={busy || isRunning}
           onClick={async () => {
             setBusy(true);
-            try {
-              await startSim();
-            } finally {
-              setBusy(false);
-            }
+            try { await startSim(); } finally { setBusy(false); onRefresh(); }
           }}
         >
           Start
@@ -116,11 +123,7 @@ export default function Controls({
           disabled={busy || !isRunning}
           onClick={async () => {
             setBusy(true);
-            try {
-              await pauseSim();
-            } finally {
-              setBusy(false);
-            }
+            try { await pauseSim(); } finally { setBusy(false); onRefresh(); }
           }}
         >
           Pause
@@ -130,15 +133,23 @@ export default function Controls({
           disabled={busy}
           onClick={async () => {
             setBusy(true);
-            try {
-              await saveState();
-              alert("State saved");
-            } catch (e) {
-              alert("Save failed");
-              console.error(e);
-            } finally {
+            try { await fetch("/api/reset_simulation", { method: "POST" }); } finally {
               setBusy(false);
+              await load();
+              onRefresh();
             }
+          }}
+        >
+          Reset
+        </button>
+
+        <button
+          disabled={busy}
+          onClick={async () => {
+            setBusy(true);
+            try { await saveState(); alert("State saved"); }
+            catch (e) { alert("Save failed"); console.error(e); }
+            finally { setBusy(false); }
           }}
         >
           Save
@@ -148,42 +159,19 @@ export default function Controls({
           disabled={busy || isRunning}
           onClick={async () => {
             setBusy(true);
-            try {
-              await loadState();
-              await load();
-              alert("State loaded");
-            } catch (e) {
-              alert("Load failed (pause the simulation first?)");
-              console.error(e);
-            } finally {
-              setBusy(false);
-            }
+            try { await loadState(); await load(); onRefresh(); alert("State loaded"); }
+            catch (e) { alert("Load failed (pause first?)"); console.error(e); }
+            finally { setBusy(false); }
           }}
         >
           Load
         </button>
-
-        {/* NEW: Reset (replaces Refresh) */}
-        <button
-          disabled={busy}
-          onClick={() => onReset()}
-        >
-          Reset
-        </button>
       </div>
 
-      {/* Legend */}
-      <div
-        style={{
-          display: "flex",
-          gap: 18,
-          margin: "8px 0 12px 0",
-          fontSize: 13,
-          opacity: 0.9,
-        }}
-      >
+      {/* Legend: yellow covers waiting OR blocked */}
+      <div style={{ display: "flex", gap: 18, margin: "8px 0 12px 0", fontSize: 13, opacity: 0.9 }}>
         <Swatch color="#34d399" label="Processing" />
-        <Swatch color="#fbbf24" label="Queued (items waiting)" />
+        <Swatch color="#fbbf24" label="Queued (waiting / blocked)" />
         <Swatch color="#60a5fa" label="Idle" />
       </div>
 
@@ -194,6 +182,7 @@ export default function Controls({
             <th>Name</th>
             <th>takt_time</th>
             <th>buffer</th>
+            <th>lane</th>
             <th style={{ width: 80 }}></th>
           </tr>
         </thead>
@@ -221,6 +210,14 @@ export default function Controls({
                   step="1"
                   defaultValue={m.buffer}
                   onBlur={(e) => onUpdate(m, "buffer", parseInt(e.currentTarget.value))}
+                />
+              </td>
+              <td>
+                <input
+                  type="number"
+                  step="1"
+                  defaultValue={m.lane}
+                  onBlur={(e) => onUpdate(m, "lane", parseInt(e.currentTarget.value))}
                 />
               </td>
               <td>
@@ -257,9 +254,15 @@ export default function Controls({
               />
             </td>
             <td>
-              <button disabled={busy} onClick={handleAdd}>
-                Add
-              </button>
+              <input
+                type="number"
+                step="1"
+                value={newLane}
+                onChange={(e) => setNewLane(parseInt(e.target.value))}
+              />
+            </td>
+            <td>
+              <button disabled={busy} onClick={handleAdd}>Add</button>
             </td>
           </tr>
         </tbody>
@@ -269,9 +272,7 @@ export default function Controls({
         <label style={{ fontSize: 13, opacity: 0.85 }}>Insert position: </label>{" "}
         <select value={insertAfter} onChange={(e) => setInsertAfter(e.target.value)}>
           {insertAfterOptions.map((o) => (
-            <option key={o.value} value={o.value}>
-              {o.label}
-            </option>
+            <option key={o.value} value={o.value}>{o.label}</option>
           ))}
         </select>
       </div>
@@ -282,16 +283,7 @@ export default function Controls({
 function Swatch({ color, label }: { color: string; label: string }) {
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-      <span
-        style={{
-          width: 14,
-          height: 14,
-          background: color,
-          borderRadius: 3,
-          display: "inline-block",
-          border: "1px solid #0001",
-        }}
-      />
+      <span style={{ width: 14, height: 14, background: color, borderRadius: 3, display: "inline-block", border: "1px solid #0001" }} />
       <span>{label}</span>
     </div>
   );

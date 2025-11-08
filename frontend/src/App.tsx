@@ -137,26 +137,41 @@ export default function App() {
     }
   };
 
-  const appStyle: React.CSSProperties = {
-    height: "100vh",
-    display: "flex",
-    flexDirection: "column",
-    background: "#f7f7f8",
-    fontFamily:
-      'Inter, system-ui, -apple-system, Segoe UI, Roboto, "Helvetica Neue", Arial',
+  const refreshOnce = async () => {
+    try {
+      const s = await getState();
+      applySnapshot(s);
+    } catch (e) {
+      console.error("refresh failed", e);
+    }
   };
-  const vizStyle: React.CSSProperties = {
-    height: "56vh",
-    background: "#fff",
-    borderBottom: "1px solid rgba(0,0,0,0.12)",
-  };
-  const panelsStyle: React.CSSProperties = {
-    flex: 1,
-    display: "flex",
-    gap: 16,
-    padding: 12,
-    alignItems: "stretch",
-  };
+
+// App.tsx  — replace these style blocks
+
+const appStyle: React.CSSProperties = {
+  minHeight: "90vh",       // use minHeight so page can grow if panels need more room
+  display: "flex",
+  flexDirection: "column",
+  background: "#f7f7f8",
+  fontFamily:
+    'Inter, system-ui, -apple-system, Segoe UI, Roboto, "Helvetica Neue", Arial',
+};
+
+const vizStyle: React.CSSProperties = {
+  height: "66vh",           // was 56vh → gives the canvas more room
+  background: "#fff",
+  borderBottom: "1px solid rgba(0,0,0,0.12)",
+};
+
+const panelsStyle: React.CSSProperties = {
+  flex: 1,
+  display: "flex",
+  gap: 24,
+  padding: "24px 16px 16px 16px", // drop panels slightly
+  alignItems: "flex-start",
+};
+
+
   const card: React.CSSProperties = {
     background: "#fff",
     border: "1px solid rgba(0,0,0,0.12)",
@@ -178,7 +193,7 @@ export default function App() {
 
       <div style={panelsStyle}>
         <div style={{ ...card, flex: "1 1 0", minWidth: 520 }}>
-          <Controls onReset={handleReset} isRunning={isRunning} />
+          <Controls onRefresh={refreshOnce} isRunning={isRunning} />
         </div>
         <div style={{ ...card, flex: "0 0 34%", minWidth: 320 }}>
           {/* key forces Metrics to drop its internal rolling arrays */}

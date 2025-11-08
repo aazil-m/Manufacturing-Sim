@@ -2,146 +2,190 @@ import { Canvas, useFrame } from "@react-three/fiber";
 import { OrbitControls } from "@react-three/drei";
 import MachineBox from "./MachineBox";
 import ItemSphere from "./ItemSphere";
-import { useMemo, useRef } from "react";
-import { StateSnapshot } from "../types";
+import { useEffect, useMemo, useRef, useState } from "react";
+import type { StateSnapshot } from "../api";
 
 const MACHINE_X_SPACING = 6.0;
+const LANE_Z_SPACING = -4.0;
+
+// ------- Helpers to order boxes left→right within each lane -------
+function orderLaneChain(laneMachines: StateSnapshot["machines"]) {
+  const idMap = new Map(laneMachines.map((m) => [m.id, m]));
+  const targets = new Set<number>();
+  laneMachines.forEach((m) => {
+    if (m.next != null) {
+      const nxt = idMap.get(m.next);
+      if (nxt && nxt.lane === m.lane) targets.add(m.next);
+    }
+  });
+  const sources = laneMachines.filter((m) => !targets.has(m.id));
+  const ordered: number[] = [];
+  for (const s of sources) {
+    let cur: number | null = s.id;
+    while (cur != null && !ordered.includes(cur)) {
+      ordered.push(cur);
+      const m = idMap.get(cur);
+      if (!m || m.next == null) break;
+      const nextM = idMap.get(m.next);
+      if (!nextM || nextM.lane !== m.lane) break;
+      cur = nextM.id;
+    }
+  }
+  for (const m of laneMachines) if (!ordered.includes(m.id)) ordered.push(m.id);
+  return ordered;
+}
+
+// -------- Event-driven sphere animation --------
+type Trail = {
+  key: string;                // unique
+  lane: number;
+  kind: "approach" | "emerge";
+  startMs: number;
+  durMs: number;
+  from: [number, number, number];
+  to: [number, number, number];
+};
+
+function nowMs() { return typeof performance !== "undefined" ? performance.now() : Date.now(); }
+function smoothstep(u: number) { return u * u * (3 - 2 * u); }
 
 function SceneContent({
   snapshot,
-  focusedMachineId,
-  onSelectMachine
+  onSelectMachine,
 }: {
   snapshot: StateSnapshot | null;
-  focusedMachineId: number | null;
   onSelectMachine: (id: number | null) => void;
 }) {
-  const machinePositions = useMemo(() => {
-    const m = snapshot?.machines ?? [];
-    return new Map(
-      m.map((mm, idx) => [mm.id, [-8.0 + idx * MACHINE_X_SPACING, 0.5, 0] as [number, number, number]])
-    );
+  // --- layout per lane ---
+  const laneOrder = useMemo(() => {
+    const byLane = new Map<number, number[]>();
+    if (!snapshot?.machines) return byLane;
+    const lanes = Array.from(new Set(snapshot.machines.map((m) => m.lane))).sort((a, b) => a - b);
+    for (const lane of lanes) {
+      const laneMs = snapshot.machines.filter((m) => m.lane === lane);
+      byLane.set(lane, orderLaneChain(laneMs));
+    }
+    return byLane;
   }, [snapshot]);
 
-  const firstMachineId = snapshot?.machines?.[0]?.id ?? null;
-  const lastMachineId  = snapshot?.machines?.[snapshot?.machines.length - 1]?.id ?? null;
+  // id -> position
+  const machinePositions = useMemo(() => {
+    const pos = new Map<number, [number, number, number]>();
+    const y = 0.5;
+    for (const [lane, ids] of Array.from(laneOrder.entries()).sort((a, b) => a[0] - b[0])) {
+      ids.forEach((id, idx) => {
+        pos.set(id, [-8.0 + idx * MACHINE_X_SPACING, y, lane * LANE_Z_SPACING]);
+      });
+    }
+    return pos;
+  }, [laneOrder]);
 
-  const sourcePos = useMemo<[number, number, number] | null>(() => {
-    if (!firstMachineId) return null;
-    const first = machinePositions.get(firstMachineId)!;
-    return [first[0] - MACHINE_X_SPACING, 0.5, 0];
-  }, [firstMachineId, machinePositions]);
+  // --- store previous per-machine state to detect transitions ---
+  const prevRef = useRef<Map<number, { processing: boolean; itemId: number | null }>>(new Map());
+  const [trails, setTrails] = useState<Trail[]>([]);
 
-  const sinkPos = useMemo<[number, number, number] | null>(() => {
-    if (!lastMachineId) return null;
-    const last = machinePositions.get(lastMachineId)!;
-    return [last[0] + MACHINE_X_SPACING, 0.5, 0];
-  }, [lastMachineId, machinePositions]);
+  // Detect start/finish events whenever we get a new snapshot
+  useEffect(() => {
+    if (!snapshot?.machines) return;
+    const GAP = 0.9;
+    const Y = 0.35;
 
-  // ---- Moving items ONLY: approach (visible) -> inside (hidden) -> emerge (visible) ----
-  const movingItems = useMemo(() => {
-    if (!snapshot) return [] as [number, number, number][];
+    const addTrail = (t: Trail) =>
+      setTrails((old) => [...old.filter((x) => nowMs() - x.startMs < x.durMs), t]);
 
-    const out: [number, number, number][] = [];
-    const APPROACH_FRAC = 0.20; // first 20% of processing shows approach
-    const EMERGE_FRAC   = 0.20; // last 20% shows emerge
-    const Y_LEVEL = 0.35;       // slightly above box top (box top ≈ 1.0)
-    const Y_ARC   = 0.20;       // gentle arch so it's not a flat line
-    const GAP     = 0.9;        // how far before/after the face we render approach/emerge
+    const seenNow = new Map<number, { processing: boolean; itemId: number | null }>();
 
     snapshot.machines.forEach((m) => {
-      const details = m.in_progress_detail ?? [];
-      const here = machinePositions.get(m.id)!;
-      const leftFaceX  = here[0] - 1.0;
-      const rightFaceX = here[0] + 1.0;
+      const pos = machinePositions.get(m.id) ?? [-8, 0.5, 0];
+      const leftX = pos[0] - 1.0;
+      const rightX = pos[0] + 1.0;
 
-      const approachStartX =
-        m.id === firstMachineId && sourcePos ? sourcePos[0] : leftFaceX - GAP;
+      const prev = prevRef.current.get(m.id) ?? { processing: false, itemId: null };
+      const curItem = (m.in_progress_detail && m.in_progress_detail[0]?.item_id) ?? null;
+      const processingNow = m.status === "processing";
 
-      const emergeEndX =
-        m.id === lastMachineId && sinkPos ? sinkPos[0] : rightFaceX + GAP;
+      // START: not processing -> processing (or new item id)
+      if (processingNow && (!prev.processing || prev.itemId !== curItem) && curItem != null) {
+        addTrail({
+          key: `in-${m.id}-${curItem}-${nowMs()}`,
+          lane: m.lane,
+          kind: "approach",
+          startMs: nowMs(),
+          durMs: 600, // ms
+          from: [leftX - GAP, Y, pos[2]],
+          to: [leftX, Y, pos[2]],
+        });
+      }
 
-      details.forEach((d) => {
-        const t = Math.min(Math.max(d.progress, 0), 1);
+      // FINISH: processing -> not processing (item left)
+      if (prev.processing && !processingNow) {
+        addTrail({
+          key: `out-${m.id}-${prev.itemId ?? "x"}-${nowMs()}`,
+          lane: m.lane,
+          kind: "emerge",
+          startMs: nowMs(),
+          durMs: 600,
+          from: [rightX, Y, pos[2]],
+          to: [rightX + GAP, Y, pos[2]],
+        });
+      }
 
-        if (t <= APPROACH_FRAC) {
-          const u = t / APPROACH_FRAC;
-          const x = approachStartX + (leftFaceX - approachStartX) * u;
-          const y = Y_LEVEL + Y_ARC * Math.sin(u * Math.PI);
-          out.push([x, y, 0]);
-        } else if (t >= 1 - EMERGE_FRAC) {
-          const u = (t - (1 - EMERGE_FRAC)) / EMERGE_FRAC;
-          const x = rightFaceX + (emergeEndX - rightFaceX) * u;
-          const y = Y_LEVEL + Y_ARC * Math.sin(u * Math.PI);
-          out.push([x, y, 0]);
-        } else {
-          // Inside machine: hidden
-        }
-      });
+      seenNow.set(m.id, { processing: processingNow, itemId: curItem });
     });
 
-    return out;
-  }, [snapshot, machinePositions, firstMachineId, lastMachineId, sourcePos, sinkPos]);
-
-  // --- Camera / OrbitControls (one-shot tween to focus, then free orbit) ---
-  const orbitRef = useRef<any>(null);
-
-  const defaultTarget: [number, number, number] = useMemo(() => {
-    if (!snapshot?.machines?.length) return [0, 0.5, 0];
-    const midIdx = Math.min(1, snapshot.machines.length - 1);
-    const midId = snapshot.machines[midIdx].id;
-    return machinePositions.get(midId)!;
+    prevRef.current = seenNow;
   }, [snapshot, machinePositions]);
 
-  const tweenRef = useRef<{
-    active: boolean;
-    t: number; // 0..1
-    from: [number, number, number];
-    to: [number, number, number];
-  }>({ active: false, t: 0, from: [0, 0.5, 0], to: defaultTarget });
+  // advance and prune trails per frame
+  const animatedSpheres = useMemo(() => trails, [trails]);
+
+  useFrame(() => {
+    setTrails((old) => old.filter((t) => nowMs() - t.startMs < t.durMs));
+  });
+
+  // --- orbit focus tween ---
+  const orbitRef = useRef<any>(null);
+  const tweenRef = useRef<{ active: boolean; t: number; from: [number, number, number]; to: [number, number, number]; }>({
+    active: false, t: 0, from: [0, 0.5, 0], to: [0, 0.5, 0],
+  });
 
   const startFocusTween = (to: [number, number, number]) => {
     const ctrl = orbitRef.current;
     if (!ctrl) return;
-    const current = [ctrl.target.x, ctrl.target.y, ctrl.target.z] as [number, number, number];
+    const current: [number, number, number] = [ctrl.target.x, ctrl.target.y, ctrl.target.z];
     tweenRef.current = { active: true, t: 0, from: current, to };
   };
 
   useFrame((_, delta) => {
     if (!tweenRef.current.active) return;
     const { from, to } = tweenRef.current;
-    const speed = 3;
-    tweenRef.current.t = Math.min(1, tweenRef.current.t + delta * speed);
-    const u = tweenRef.current.t;
-    const s = u * u * (3 - 2 * u); // smoothstep
-
+    const u = Math.min(1, tweenRef.current.t + delta * 3);
+    tweenRef.current.t = u;
+    const s = smoothstep(u);
     const x = from[0] + (to[0] - from[0]) * s;
     const y = from[1] + (to[1] - from[1]) * s;
     const z = from[2] + (to[2] - from[2]) * s;
-
     orbitRef.current.target.set(x, y, z);
     orbitRef.current.update();
-
-    if (u >= 1) tweenRef.current.active = false; // free orbit again
+    if (u >= 1) tweenRef.current.active = false;
   });
 
   const handleSelect = (id: number) => {
     onSelectMachine(id);
-    const p = machinePositions.get(id) ?? defaultTarget;
+    const p = machinePositions.get(id) ?? [0, 0.5, 0];
     startFocusTween(p);
   };
 
-  // helper: color by state with BLOCKED = yellow
-  const colorForMachine = (m: any) => {
-    if (m.status === "processing") {
-      // If backend provides `blocked: true`, prefer that
-      if (m.blocked) return "#facc15"; // yellow
-      return "#22c55e"; // green
-    }
-    if (m.status === "queued") return "#fbbf24"; // amber
-    if (m.status === "idle") return "#60a5fa"; // blue
-    return "#9ca3af";
-  };
+  // Interpolate trail positions deterministically (no drift)
+  const renderTrails = () =>
+    animatedSpheres.map((t) => {
+      const u = Math.min(1, Math.max(0, (nowMs() - t.startMs) / t.durMs));
+      const s = smoothstep(u);
+      const x = t.from[0] + (t.to[0] - t.from[0]) * s;
+      const y = t.from[1] + (t.to[1] - t.from[1]) * s;
+      const z = t.from[2] + (t.to[2] - t.from[2]) * s;
+      return <ItemSphere key={t.key} position={[x, y, z]} lane={t.lane} />;
+    });
 
   return (
     <>
@@ -151,22 +195,24 @@ function SceneContent({
       <OrbitControls ref={orbitRef as any} />
 
       {snapshot?.machines.map((m) => {
-        const p = machinePositions.get(m.id)!;
+        const p = machinePositions.get(m.id) ?? [-8, 0.5, 0];
+        // Yellow if queued OR blocked; Green if actively processing; Blue otherwise
+        const color =
+          (m.blocked || m.status === "queued") ? "#fbbf24" :
+          m.status === "processing" ? "#34d399" :
+          "#60a5fa";
         return (
           <MachineBox
             key={m.id}
-            label={m.name}
+            label={`${m.name} (L${m.lane})`}
             position={p}
-            color={colorForMachine(m)}
+            color={color}
             onClick={() => handleSelect(m.id)}
           />
         );
       })}
 
-      {/* Visible segments only: approach & emerge */}
-      {movingItems.map((p, i) => (
-        <ItemSphere key={`m-${i}`} position={p} />
-      ))}
+      {renderTrails()}
     </>
   );
 }
@@ -174,7 +220,7 @@ function SceneContent({
 export default function Factory({
   snapshot,
   focusedMachineId,
-  onSelectMachine
+  onSelectMachine,
 }: {
   snapshot: StateSnapshot | null;
   focusedMachineId: number | null;
@@ -182,11 +228,7 @@ export default function Factory({
 }) {
   return (
     <Canvas camera={{ position: [12, 6.5, 14], fov: 50 }}>
-      <SceneContent
-        snapshot={snapshot}
-        focusedMachineId={focusedMachineId}
-        onSelectMachine={onSelectMachine}
-      />
+      <SceneContent snapshot={snapshot} onSelectMachine={onSelectMachine} />
     </Canvas>
   );
 }
