@@ -1,5 +1,11 @@
 # Manufacturing Line Simulation
 
+![Demo Screenshot](docs/sim_preview.png)
+
+![Tech Stack](https://img.shields.io/badge/Frontend-React%20%2B%20Three.js-blue)
+![Backend](https://img.shields.io/badge/Backend-FastAPI-green)
+![WebSocket](https://img.shields.io/badge/Live-Updates-orange)
+
 A mini full‑stack web application that simulates the **flow of goods through a manufacturing line**.  
 The system consists of a **FastAPI backend** and a **React + Three.js (React Three Fiber)** frontend.
 
@@ -11,6 +17,7 @@ The simulator represents a set of machines (Cutting, Assembly, Packaging) that p
 Each machine has a configurable **takt time** (processing duration) and **buffer size** (number of items it can hold).  
 The simulation runs continuously, showing item movement and live performance metrics such as throughput and utilization.
 
+Now supports **multiple parallel production flows** (multi-lane simulation) — each lane runs independently with its own machines, takt times, and queues.
 ---
 
 ## 🧩 Project Structure
@@ -122,7 +129,7 @@ Built with **React Three Fiber** (Three.js + React).
 - Items → moving spheres that approach, disappear “inside”, then emerge to the next stage.
 - Colors:
   - 🟩 Green – currently processing
-  - 🟨 Yellow – queued (waiting items)
+  - 🟨 Yellow – queued or temporarily blocked(waiting items)
   - 🟦 Blue – idle
 - Control panel lets you **start**, **pause**, **reset** and **edit machine parameters** in real time.
 - Metrics panel displays live statistics pulled from the `/state` endpoint every 5 seconds.
@@ -137,6 +144,18 @@ Built with **React Three Fiber** (Three.js + React).
 - **WebSockets + 5 s sampling** → smooth updates without clutter.
 - **TypeScript frontend** → safe API integration and prop validation.
 - **Reset Endpoint** → clears all state and history for a fresh run.
+- **Multi-lane support** → simulate multiple independent production flows.
+
+---
+
+## 🎥 Demo (Suggested Walkthrough)
+
+1. **Start** the simulation → observe spheres moving through the line.  
+2. **Add** or **remove** machines dynamically → the line reconfigures instantly.  
+3. **Change** takt time or buffer → throughput and utilization respond in real-time.  
+4. **Start a new lane (lane=1)** → see parallel production running side-by-side.  
+5. **Save**, **Pause**, **Reset**, and **Load** → verify full persistence support.  
+6. **View Metrics** → throughput line chart & per-machine utilization graph update every 5 seconds.
 
 ---
 
@@ -146,11 +165,7 @@ Built with **React Three Fiber** (Three.js + React).
 - ✅WebSocket live updates instead of polling.
 - ✅Persistent save/load of simulation state.
 - ✅Historical throughput graphs over time.
-<<<<<<< HEAD
-- Multiple production lines or item types.
-=======
 - ✅Multiple production lines or item types.
->>>>>>> 8ee8b95 (Updated README file)
 
 ---
 
