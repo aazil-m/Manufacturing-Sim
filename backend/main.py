@@ -26,6 +26,7 @@ class Machine(BaseModel):
     completed: int = 0
     busy_time: float = 0.0  # for utilization
     last_state_change: float = 0.0
+    blocked: bool = False
 
 class UpdateMachineRequest(BaseModel):
     id: int
@@ -120,6 +121,9 @@ def get_machine(mid: int) -> Machine:
     raise KeyError(f"Machine {mid} not found")
 
 def start_processing_if_possible(m: Machine, current_time: float):
+    # do NOT start if we’re currently blocked waiting to push a finished item
+    if m.blocked:
+        return
     if len(m.in_progress) == 0 and len(m.queue) > 0:
         item = m.queue.pop(0)
         item["start_time"] = current_time
@@ -130,27 +134,48 @@ def start_processing_if_possible(m: Machine, current_time: float):
 
 def try_push_to_next(m: Machine, current_time: float):
     if len(m.in_progress) == 0:
+        # if there’s nothing in progress, we’re certainly not blocked
+        m.blocked = False
         return
+
     item = m.in_progress[0]
     elapsed = current_time - item["start_time"]
-    if elapsed >= m.takt_time:
+
+    if elapsed < m.takt_time:
+        # still processing
+        m.blocked = False
+        return
+
+    # item finished: attempt to push
+    nxt = m.next
+    if nxt is None:
+        # sink: completion
         m.in_progress.pop(0)
         m.completed += 1
         m.busy_time += m.takt_time
         m.last_state_change = current_time
+        m.blocked = False
 
-        nxt = m.next
-        if nxt is None:
-            global total_completed, cycle_times
-            total_completed += 1
-            cycle_times.append(current_time - item["created_at"])
-            completions.append(current_time)
-        else:
-            next_m = get_machine(nxt)
-            if len(next_m.queue) < next_m.buffer:
-                next_m.queue.append(item)
-            else:
-                m.queue.insert(0, item)
+        global total_completed, cycle_times
+        total_completed += 1
+        cycle_times.append(current_time - item["created_at"])
+        completions.append(current_time)
+        return
+
+    # push to next buffer if space available
+    next_m = get_machine(nxt)
+    if len(next_m.queue) < next_m.buffer:
+        m.in_progress.pop(0)
+        m.completed += 1
+        m.busy_time += m.takt_time
+        m.last_state_change = current_time
+        m.blocked = False
+
+        next_m.queue.append(item)
+    else:
+        # cannot push → remain in_progress and mark blocked
+        m.blocked = True
+
 
 def spawn_new_item_if_possible(current_time: float):
     global item_id_seq, total_started
@@ -208,6 +233,17 @@ def index_of(mid: int) -> int:
 def upstream_of(target_id: int) -> List[Machine]:
     return [m for m in machines if m.next == target_id]
 
+def is_blocked(m: Machine) -> bool:
+    if not m.in_progress:
+        return False
+    if m.next is None:
+        return False
+    try:
+        nxt = get_machine(m.next)
+    except KeyError:
+        return False
+    return len(nxt.queue) >= nxt.buffer
+
 def build_state_dict() -> Dict[str, Any]:
     """Create the same payload as /state, but as a dict (no pydantic)."""
     t = sim_time
@@ -217,25 +253,39 @@ def build_state_dict() -> Dict[str, Any]:
 
     machines_view = []
     for m in machines:
-        status = "processing" if len(m.in_progress) > 0 else ("idle" if len(m.queue) == 0 else "queued")
+        # Determine progress/blocked
+        blocked = False
         detail = []
         if m.in_progress:
-            for it in m.in_progress:
-                p = min(max((t - it["start_time"]) / m.takt_time, 0.0), 1.0)
-                detail.append({"item_id": it.get("item_id", -1), "progress": p})
+            it = m.in_progress[0]
+            p = min(max((t - it["start_time"]) / m.takt_time, 0.0), 1.0)
+            detail.append({"item_id": it.get("item_id", -1), "progress": p})
+            # blocked if finished but downstream full
+            if p >= 1.0 and m.next is not None:
+                next_m = get_machine(m.next)
+                blocked = (len(next_m.queue) >= next_m.buffer)
+
+        status = (
+            "processing" if len(m.in_progress) > 0
+            else ("idle" if len(m.queue) == 0 else "queued")
+        )
+
         machines_view.append({
             "id": m.id,
             "name": m.name,
             "next": m.next,
             "status": status,
+            "blocked": is_blocked(m),            # <-- extra hint for UI
             "in_progress": len(m.in_progress),
             "in_progress_detail": detail,
             "queue": len(m.queue),
             "buffer": m.buffer,
             "takt_time": m.takt_time,
             "completed": m.completed,
-            "utilization": (m.busy_time / t) if t > 0 else 0.0
+            "utilization": (m.busy_time / t) if t > 0 else 0.0,
+            "blocked": m.blocked
         })
+
     return {
         "timestamp": round(t, 2),
         "items_in_system": in_system,
@@ -267,17 +317,24 @@ def update_machine(req: UpdateMachineRequest):
         except KeyError:
             raise HTTPException(status_code=404, detail="Machine not found")
 
-        if req.takt_time is not None:
-            if req.takt_time <= 0:
+        # Only apply fields that were explicitly sent by the client
+        provided = req.model_dump(exclude_unset=True)
+
+        if "takt_time" in provided:
+            if req.takt_time is None or req.takt_time <= 0:
                 raise HTTPException(status_code=400, detail="takt_time must be > 0")
-            m.takt_time = req.takt_time
-        if req.buffer is not None:
-            if req.buffer < 0:
+            m.takt_time = float(req.takt_time)
+
+        if "buffer" in provided:
+            if req.buffer is None or req.buffer < 0:
                 raise HTTPException(status_code=400, detail="buffer must be >= 0")
-            m.buffer = req.buffer
-        if req.name is not None:
-            m.name = req.name
-        if req.next is not None or req.next is None:
+            m.buffer = int(req.buffer)
+
+        if "name" in provided:
+            m.name = str(req.name)
+
+        if "next" in provided:
+            # allow None explicitly to make a sink
             m.next = req.next
 
         return {
@@ -388,7 +445,8 @@ def get_state():
                 "buffer": m.buffer,
                 "takt_time": m.takt_time,
                 "completed": m.completed,
-                "utilization": (m.busy_time / current_time) if current_time > 0 else 0.0
+                "utilization": (m.busy_time / current_time) if current_time > 0 else 0.0,
+                "blocked": m.blocked
             })
 
         return StateSnapshot(
@@ -461,3 +519,23 @@ async def ws_state(ws: WebSocket):
     except Exception as e:
         print("WS error:", repr(e)) #debug
         ws_manager.disconnect(ws)
+
+@app.post("/reset_simulation")
+def reset_simulation():
+    global running, sim_time, _last_wall, total_started, total_completed, cycle_times, item_id_seq
+    with state_lock:
+        running = False
+        sim_time = 0.0
+        _last_wall = time.time()
+        total_started = 0
+        total_completed = 0
+        cycle_times = []
+        item_id_seq = 0
+        for m in machines:
+            m.in_progress.clear()
+            m.queue.clear()
+            m.completed = 0
+            m.busy_time = 0.0
+            m.last_state_change = 0.0
+            m.blocked = False
+    return {"message": "Simulation reset (paused). Click Start to run."}
