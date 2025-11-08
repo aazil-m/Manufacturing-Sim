@@ -14,10 +14,10 @@ class Machine(BaseModel):
     next: Optional[int] = None
     takt_time: float = 1.0
     buffer: int = 1
-    in_progress: List[Dict[str, Any]] = Field(default_factory=list)  # items being processed with start_time
+    in_progress: List[Dict[str, Any]] = Field(default_factory=list)  # items with start_time
     queue: List[Dict[str, Any]] = Field(default_factory=list)        # waiting items (buffer)
     completed: int = 0
-    busy_time: float = 0.0  # for utilization
+    busy_time: float = 0.0  # for utilization (sim-time based)
     last_state_change: float = 0.0
 
 class UpdateMachineRequest(BaseModel):
@@ -43,17 +43,22 @@ machines: List[Machine] = [
     Machine(id=3, name="Packaging", next=None, takt_time=3.0, buffer=1),
 ]
 
+# -----------------------------
 # Global simulation state
+# -----------------------------
 state_lock = threading.Lock()
 running = False
 sim_thread: Optional[threading.Thread] = None
-t0 = time.time()
-last_tick = t0
+
+# Simulation clock (advances only while running)
+_t0_wall = time.time()
+sim_time = 0.0          # seconds of simulated time
+_last_wall = _t0_wall   # last wall-clock reading used to advance sim_time
 
 # Metrics
 total_started = 0
 total_completed = 0
-cycle_times: List[float] = []  # per item (completed_time - created_time)
+cycle_times: List[float] = []  # completed item (finish - created)
 item_id_seq = 0
 
 # -----------------------------
@@ -61,11 +66,21 @@ item_id_seq = 0
 # -----------------------------
 TICK_SEC = 0.1
 
+def _wall_now() -> float:
+    return time.time()
+
 def now() -> float:
-    return time.time() - t0
+    """Current simulation time (seconds)."""
+    return sim_time
+
+def get_machine(mid: int) -> Machine:
+    for m in machines:
+        if m.id == mid:
+            return m
+    raise KeyError(f"Machine {mid} not found")
 
 def start_processing_if_possible(m: Machine, current_time: float):
-    # Fill machine from its queue into in_progress if it has capacity (1 item at a time for simplicity)
+    """Start processing the head of the queue if the machine is idle."""
     if len(m.in_progress) == 0 and len(m.queue) > 0:
         item = m.queue.pop(0)
         item["start_time"] = current_time
@@ -75,7 +90,7 @@ def start_processing_if_possible(m: Machine, current_time: float):
         m.last_state_change = current_time
 
 def try_push_to_next(m: Machine, current_time: float):
-    # If item finished processing, send to next machine's buffer or complete if None
+    """If the item being processed has finished, push it to next buffer or complete it."""
     if len(m.in_progress) == 0:
         return
     item = m.in_progress[0]
@@ -94,19 +109,12 @@ def try_push_to_next(m: Machine, current_time: float):
             total_completed += 1
             cycle_times.append(current_time - item["created_at"])
         else:
-            # push to next buffer if space, otherwise wait (re-queue in this machine until space)
             next_m = get_machine(nxt)
             if len(next_m.queue) < next_m.buffer:
                 next_m.queue.append(item)
             else:
-                # If next buffer full, keep item at the head of our queue to retry next tick
+                # next buffer full -> requeue at the head so we retry next tick
                 m.queue.insert(0, item)
-
-def get_machine(mid: int) -> Machine:
-    for m in machines:
-        if m.id == mid:
-            return m
-    raise KeyError(f"Machine {mid} not found")
 
 def spawn_new_item_if_possible(current_time: float):
     """
@@ -122,13 +130,17 @@ def spawn_new_item_if_possible(current_time: float):
         total_started += 1
 
 def simulation_loop():
-    global running, last_tick
+    global running, sim_time, _last_wall
     while True:
         with state_lock:
-            if not running:
-                pass  # fall through and sleep
-            else:
-                current_time = now()
+            if running:
+                wall = _wall_now()
+                dt = wall - _last_wall
+                _last_wall = wall
+                # advance simulation clock
+                sim_time += max(dt, 0.0)
+
+                current_time = sim_time
 
                 # 1) Try to complete items and push downstream
                 for m in machines[::-1]:
@@ -140,8 +152,6 @@ def simulation_loop():
 
                 # 3) Source tries to feed the line
                 spawn_new_item_if_possible(current_time)
-
-                last_tick = current_time
 
         time.sleep(TICK_SEC)
 
@@ -182,11 +192,12 @@ def update_machine(req: UpdateMachineRequest):
         if req.buffer is not None:
             if req.buffer < 0:
                 raise HTTPException(status_code=400, detail="buffer must be >= 0")
-            # If shrinking buffer below current queue length, keep extra items (no drop) — still valid logically
+            # If shrinking buffer below current queue length, keep extra items (no drop)
             m.buffer = req.buffer
         if req.name is not None:
             m.name = req.name
-        if req.next is not None or req.next is None:
+        # allow setting next to a number or null
+        if req.next is None or isinstance(req.next, int):
             m.next = req.next
 
         return {
@@ -202,9 +213,10 @@ def update_machine(req: UpdateMachineRequest):
 
 @app.post("/start_simulation")
 def start_simulation():
-    global running
+    global running, _last_wall
     with state_lock:
         running = True
+        _last_wall = _wall_now()  # reset marker so we don't add a big dt on resume
     ensure_thread()
     return {"message": "Simulation started/resumed"}
 
@@ -218,7 +230,7 @@ def pause_simulation():
 @app.get("/state", response_model=StateSnapshot)
 def get_state():
     with state_lock:
-        current_time = now()
+        current_time = now()  # sim-time (pauses when paused)
         in_system = sum(len(m.queue) + len(m.in_progress) for m in machines)
         throughput = (total_completed / current_time) if current_time > 0 else 0.0
         avg_ct = (sum(cycle_times) / len(cycle_times)) if cycle_times else 0.0
@@ -229,8 +241,15 @@ def get_state():
             machines_view.append({
                 "id": m.id,
                 "name": m.name,
+                "next": m.next,  # expose next for frontend positioning
                 "status": status,
                 "in_progress": len(m.in_progress),
+                "in_progress_detail": [
+                    {
+                        "item_id": it["item_id"],
+                        "progress": min((current_time - it["start_time"]) / max(m.takt_time, 1e-9), 1.0)
+                    } for it in m.in_progress
+                ],
                 "queue": len(m.queue),
                 "buffer": m.buffer,
                 "takt_time": m.takt_time,
