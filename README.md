@@ -146,7 +146,11 @@ Built with **React Three Fiber** (Three.js + React).
 - ✅WebSocket live updates instead of polling.
 - ✅Persistent save/load of simulation state.
 - ✅Historical throughput graphs over time.
+<<<<<<< HEAD
 - Multiple production lines or item types.
+=======
+- ✅Multiple production lines or item types.
+>>>>>>> 8ee8b95 (Updated README file)
 
 ---
 
