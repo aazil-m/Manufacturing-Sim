@@ -8,17 +8,14 @@ import { getState } from "./api";
 export default function App() {
   const [snapshot, setSnapshot] = useState<StateSnapshot | null>(null);
   const [isRunning, setIsRunning] = useState(false);
+  const [focusedMachineId, setFocusedMachineId] = useState<number | null>(null);
   const lastTsRef = useRef<number>(0);
 
   const refresh = async () => {
     const s: StateSnapshot = await getState();
     setSnapshot(s);
-    // If timestamp advanced, we consider the sim running
-    if (s?.timestamp > lastTsRef.current) {
-      setIsRunning(true);
-    } else if (s && s.timestamp === lastTsRef.current) {
-      setIsRunning(false);
-    }
+    if (s?.timestamp > lastTsRef.current) setIsRunning(true);
+    else if (s && s.timestamp === lastTsRef.current) setIsRunning(false);
     lastTsRef.current = s?.timestamp ?? 0;
   };
 
@@ -31,7 +28,11 @@ export default function App() {
   return (
     <div className="layout">
       <div>
-        <Factory snapshot={snapshot} />
+        <Factory
+          snapshot={snapshot}
+          focusedMachineId={focusedMachineId}
+          onSelectMachine={setFocusedMachineId}
+        />
       </div>
       <div className="bottom" style={{ gridTemplateColumns: "1fr 1fr" }}>
         <Controls onRefresh={refresh} isRunning={isRunning} />
