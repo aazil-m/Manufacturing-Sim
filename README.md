@@ -1,7 +1,5 @@
 # Manufacturing Line Simulation
 
-![Demo Screenshot](docs/sim_preview.png)
-
 ![Tech Stack](https://img.shields.io/badge/Frontend-React%20%2B%20Three.js-blue)
 ![Backend](https://img.shields.io/badge/Backend-FastAPI-green)
 ![WebSocket](https://img.shields.io/badge/Live-Updates-orange)
