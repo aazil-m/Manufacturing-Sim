@@ -1,3 +1,6 @@
+import asyncio
+import json
+from fastapi import WebSocket, WebSocketDisconnect
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 from typing import Optional, List, Dict, Any
@@ -50,6 +53,33 @@ class StateSnapshot(BaseModel):
     avg_cycle_time: float
     machines: List[Dict[str, Any]]
     running: bool
+
+# --- WebSocket connection manager ---
+class WSManager:
+    def __init__(self):
+        self.active: set[WebSocket] = set()
+
+    async def connect(self, ws: WebSocket):
+        await ws.accept()
+        self.active.add(ws)
+
+    def disconnect(self, ws: WebSocket):
+        self.active.discard(ws)
+
+    async def broadcast(self, msg: str):
+        if not self.active:
+            return
+        dead = []
+        for ws in list(self.active):
+            try:
+                await ws.send_text(msg)
+            except Exception:
+                dead.append(ws)
+        for ws in dead:
+            self.disconnect(ws)
+
+ws_manager = WSManager()
+# -----------------------------------
 
 # Initial line (spec example)
 machines: List[Machine] = [
@@ -177,6 +207,45 @@ def index_of(mid: int) -> int:
 
 def upstream_of(target_id: int) -> List[Machine]:
     return [m for m in machines if m.next == target_id]
+
+def build_state_dict() -> Dict[str, Any]:
+    """Create the same payload as /state, but as a dict (no pydantic)."""
+    t = sim_time
+    in_system = sum(len(m.queue) + len(m.in_progress) for m in machines)
+    throughput = (total_completed / t) if t > 0 else 0.0
+    avg_ct = (sum(cycle_times) / len(cycle_times)) if cycle_times else 0.0
+
+    machines_view = []
+    for m in machines:
+        status = "processing" if len(m.in_progress) > 0 else ("idle" if len(m.queue) == 0 else "queued")
+        detail = []
+        if m.in_progress:
+            for it in m.in_progress:
+                p = min(max((t - it["start_time"]) / m.takt_time, 0.0), 1.0)
+                detail.append({"item_id": it.get("item_id", -1), "progress": p})
+        machines_view.append({
+            "id": m.id,
+            "name": m.name,
+            "next": m.next,
+            "status": status,
+            "in_progress": len(m.in_progress),
+            "in_progress_detail": detail,
+            "queue": len(m.queue),
+            "buffer": m.buffer,
+            "takt_time": m.takt_time,
+            "completed": m.completed,
+            "utilization": (m.busy_time / t) if t > 0 else 0.0
+        })
+    return {
+        "timestamp": round(t, 2),
+        "items_in_system": in_system,
+        "throughput": round(throughput, 4),
+        "total_started": total_started,
+        "total_completed": total_completed,
+        "avg_cycle_time": round(avg_ct, 3),
+        "machines": machines_view,
+        "running": running,
+    }
 
 # -----------------------------
 # API routes
@@ -375,3 +444,20 @@ def load_state():
             machines.append(Machine(**md))
 
     return {"message": "State restored successfully"}
+
+# Websocket endpoints (added)
+@app.websocket("/ws/state")
+async def ws_state(ws: WebSocket):
+    await ws_manager.connect(ws)
+    try:
+        while True:
+            # Safely snapshot under the lock
+            with state_lock:
+                payload = json.dumps(build_state_dict())
+            await ws.send_text(payload)
+            await asyncio.sleep(1.0)  # 1 Hz; adjust as desired
+    except WebSocketDisconnect:
+        ws_manager.disconnect(ws)
+    except Exception as e:
+        print("WS error:", repr(e)) #debug
+        ws_manager.disconnect(ws)
