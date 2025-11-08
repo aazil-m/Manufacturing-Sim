@@ -3,6 +3,9 @@ from pydantic import BaseModel, Field
 from typing import Optional, List, Dict, Any
 import time, threading
 from collections import deque
+# --- added for persistence ---
+import json, os
+# -----------------------------
 
 app = FastAPI(title="Manufacturing Line Simulator")
 
@@ -70,6 +73,10 @@ total_completed = 0
 cycle_times: List[float] = []  # per item (completed_time - created_time)
 item_id_seq = 0
 completions = deque(maxlen=5000)  # optional: for future rolling throughput
+
+# --- added: path to save file ---
+SAVE_PATH = os.path.join(os.path.dirname(__file__), "sim_state.json")
+# --------------------------------
 
 # -----------------------------
 # Simulation engine (background)
@@ -243,7 +250,7 @@ def remove_machine(req: RemoveMachineRequest):
         try:
             idx = index_of(req.id)
         except KeyError:
-            raise HTTPException(404, "Machine not found")
+            raise HTTPException(status_code=404, detail="Machine not found")
         victim = machines[idx]
 
         # rewire upstream
@@ -325,3 +332,46 @@ def get_state():
             machines=machines_view,
             running=running
         )
+
+# -----------------------------
+# Persistence endpoints (added)
+# -----------------------------
+@app.post("/save_state")
+def save_state():
+    with state_lock:
+        data = {
+            "sim_time": sim_time,
+            "running": running,          # will be set false on load
+            "total_started": total_started,
+            "total_completed": total_completed,
+            "cycle_times": cycle_times,
+            "item_id_seq": item_id_seq,
+            "machines": [m.model_dump() for m in machines],
+        }
+        with open(SAVE_PATH, "w") as f:
+            json.dump(data, f, indent=2)
+    return {"message": f"State saved to {os.path.basename(SAVE_PATH)}"}
+
+@app.post("/load_state")
+def load_state():
+    global sim_time, running, total_started, total_completed, cycle_times, item_id_seq
+    if not os.path.exists(SAVE_PATH):
+        raise HTTPException(status_code=404, detail="No saved state found")
+    with state_lock:
+        if running:
+            raise HTTPException(status_code=400, detail="Pause simulation before loading state")
+        with open(SAVE_PATH, "r") as f:
+            data = json.load(f)
+
+        sim_time = data.get("sim_time", 0.0)
+        running = False  # always load as paused; user can Start explicitly
+        total_started = data.get("total_started", 0)
+        total_completed = data.get("total_completed", 0)
+        cycle_times = data.get("cycle_times", [])
+        item_id_seq = data.get("item_id_seq", 0)
+
+        machines.clear()
+        for md in data.get("machines", []):
+            machines.append(Machine(**md))
+
+    return {"message": "State restored successfully"}

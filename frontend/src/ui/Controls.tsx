@@ -16,6 +16,17 @@ type Machine = {
   next: number | null;
 };
 
+// --- added: local helpers to call persistence endpoints via the vite proxy (/api) ---
+async function saveState() {
+  const r = await fetch("/api/save_state", { method: "POST" });
+  if (!r.ok) throw new Error(await r.text());
+}
+async function loadState() {
+  const r = await fetch("/api/load_state", { method: "POST" });
+  if (!r.ok) throw new Error(await r.text());
+}
+// ------------------------------------------------------------------------------------
+
 export default function Controls({
   onRefresh,
   isRunning,
@@ -130,6 +141,46 @@ export default function Controls({
         >
           Pause
         </button>
+
+        {/* --- added: Save / Load --- */}
+        <button
+          disabled={busy}
+          onClick={async () => {
+            setBusy(true);
+            try {
+              await saveState();
+              alert("State saved");
+            } catch (e) {
+              alert("Save failed");
+              console.error(e);
+            } finally {
+              setBusy(false);
+            }
+          }}
+        >
+          Save
+        </button>
+
+        <button
+          disabled={busy || isRunning}
+          onClick={async () => {
+            setBusy(true);
+            try {
+              await loadState();
+              await load();
+              onRefresh();
+              alert("State loaded");
+            } catch (e) {
+              alert("Load failed (pause the simulation first?)");
+              console.error(e);
+            } finally {
+              setBusy(false);
+            }
+          }}
+        >
+          Load
+        </button>
+        {/* ------------------------- */}
 
         <button
           disabled={busy}
