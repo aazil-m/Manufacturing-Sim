@@ -52,15 +52,12 @@ function SceneContent({
     snapshot.machines.forEach((m) => {
       const details = m.in_progress_detail ?? [];
       const here = machinePositions.get(m.id)!;
-      // Exact faces of the box (width=2 → half=1)
       const leftFaceX  = here[0] - 1.0;
       const rightFaceX = here[0] + 1.0;
 
-      // Where approach starts
       const approachStartX =
         m.id === firstMachineId && sourcePos ? sourcePos[0] : leftFaceX - GAP;
 
-      // Where emerge ends
       const emergeEndX =
         m.id === lastMachineId && sinkPos ? sinkPos[0] : rightFaceX + GAP;
 
@@ -68,19 +65,17 @@ function SceneContent({
         const t = Math.min(Math.max(d.progress, 0), 1);
 
         if (t <= APPROACH_FRAC) {
-          // Approach from left → left face
-          const u = t / APPROACH_FRAC; // 0..1
+          const u = t / APPROACH_FRAC;
           const x = approachStartX + (leftFaceX - approachStartX) * u;
           const y = Y_LEVEL + Y_ARC * Math.sin(u * Math.PI);
           out.push([x, y, 0]);
         } else if (t >= 1 - EMERGE_FRAC) {
-          // Emerge from right face → out to gap/sink
-          const u = (t - (1 - EMERGE_FRAC)) / EMERGE_FRAC; // 0..1
+          const u = (t - (1 - EMERGE_FRAC)) / EMERGE_FRAC;
           const x = rightFaceX + (emergeEndX - rightFaceX) * u;
           const y = Y_LEVEL + Y_ARC * Math.sin(u * Math.PI);
           out.push([x, y, 0]);
         } else {
-          // Inside machine: hidden (do not render a sphere)
+          // Inside machine: hidden
         }
       });
     });
@@ -136,6 +131,18 @@ function SceneContent({
     startFocusTween(p);
   };
 
+  // helper: color by state with BLOCKED = yellow
+  const colorForMachine = (m: any) => {
+    if (m.status === "processing") {
+      // If backend provides `blocked: true`, prefer that
+      if (m.blocked) return "#facc15"; // yellow
+      return "#22c55e"; // green
+    }
+    if (m.status === "queued") return "#fbbf24"; // amber
+    if (m.status === "idle") return "#60a5fa"; // blue
+    return "#9ca3af";
+  };
+
   return (
     <>
       <ambientLight />
@@ -145,14 +152,12 @@ function SceneContent({
 
       {snapshot?.machines.map((m) => {
         const p = machinePositions.get(m.id)!;
-        const color =
-          m.status === "processing" ? "#34d399" : m.status === "queued" ? "#fbbf24" : "#60a5fa";
         return (
           <MachineBox
             key={m.id}
             label={m.name}
             position={p}
-            color={color}
+            color={colorForMachine(m)}
             onClick={() => handleSelect(m.id)}
           />
         );
