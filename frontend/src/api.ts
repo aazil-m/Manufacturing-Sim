@@ -17,7 +17,7 @@ export type StateSnapshot = {
   total_started: number;
   total_completed: number;
   avg_cycle_time: number;
-  running: boolean; // <-- add this
+  running: boolean;
   machines: Array<{
     id: number;
     name: string;
@@ -30,6 +30,7 @@ export type StateSnapshot = {
     takt_time: number;
     completed: number;
     utilization: number;
+    blocked: boolean; // <-- now included in type
   }>;
 };
 
@@ -89,4 +90,17 @@ export async function removeMachine(id: number) {
       body: JSON.stringify({ id }),
     })
   );
+}
+
+// Persistence
+export async function saveState() {
+  return json(await fetch(`${BASE}/save_state`, { method: "POST" }));
+}
+export async function loadState() {
+  return json(await fetch(`${BASE}/load_state`, { method: "POST" }));
+}
+
+// NEW: Reset whole simulation on the backend
+export async function resetSimulation() {
+  return json(await fetch(`${BASE}/reset_simulation`, { method: "POST" }));
 }

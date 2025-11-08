@@ -6,6 +6,8 @@ import {
   updateMachine,
   addMachine,
   removeMachine,
+  saveState,
+  loadState,
 } from "../api";
 
 type Machine = {
@@ -16,22 +18,11 @@ type Machine = {
   next: number | null;
 };
 
-// --- added: local helpers to call persistence endpoints via the vite proxy (/api) ---
-async function saveState() {
-  const r = await fetch("/api/save_state", { method: "POST" });
-  if (!r.ok) throw new Error(await r.text());
-}
-async function loadState() {
-  const r = await fetch("/api/load_state", { method: "POST" });
-  if (!r.ok) throw new Error(await r.text());
-}
-// ------------------------------------------------------------------------------------
-
 export default function Controls({
-  onRefresh,
+  onReset,          // <-- renamed from onRefresh
   isRunning,
 }: {
-  onRefresh: () => void;
+  onReset: () => void | Promise<void>;
   isRunning: boolean;
 }) {
   const [machines, setMachines] = useState<Machine[]>([]);
@@ -42,8 +33,7 @@ export default function Controls({
   const [newTakt, setNewTakt] = useState<number>(3);
   const [newBuf, setNewBuf] = useState<number>(1);
 
-  // NOTE: make this a string so the <select> has a single value type
-  // "end" or the stringified machine id (e.g. "2")
+  // "end" or stringified machine id
   const [insertAfter, setInsertAfter] = useState<string>("end");
 
   const load = async () => setMachines(await getMachines());
@@ -61,7 +51,6 @@ export default function Controls({
     try {
       await updateMachine({ id: m.id, [field]: val } as any);
       await load();
-      onRefresh();
     } finally {
       setBusy(false);
     }
@@ -78,7 +67,6 @@ export default function Controls({
       });
       setNewName("New Machine");
       await load();
-      onRefresh();
     } finally {
       setBusy(false);
     }
@@ -90,13 +78,11 @@ export default function Controls({
     try {
       await removeMachine(m.id);
       await load();
-      onRefresh();
     } finally {
       setBusy(false);
     }
   };
 
-  // All option values are strings
   const insertAfterOptions = useMemo(
     () =>
       [
@@ -120,7 +106,6 @@ export default function Controls({
               await startSim();
             } finally {
               setBusy(false);
-              onRefresh();
             }
           }}
         >
@@ -135,14 +120,12 @@ export default function Controls({
               await pauseSim();
             } finally {
               setBusy(false);
-              onRefresh();
             }
           }}
         >
           Pause
         </button>
 
-        {/* --- added: Save / Load --- */}
         <button
           disabled={busy}
           onClick={async () => {
@@ -168,7 +151,6 @@ export default function Controls({
             try {
               await loadState();
               await load();
-              onRefresh();
               alert("State loaded");
             } catch (e) {
               alert("Load failed (pause the simulation first?)");
@@ -180,16 +162,13 @@ export default function Controls({
         >
           Load
         </button>
-        {/* ------------------------- */}
 
+        {/* NEW: Reset (replaces Refresh) */}
         <button
           disabled={busy}
-          onClick={async () => {
-            await load();
-            onRefresh();
-          }}
+          onClick={() => onReset()}
         >
-          Refresh
+          Reset
         </button>
       </div>
 

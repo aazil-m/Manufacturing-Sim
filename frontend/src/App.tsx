@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { getState } from "./api";
+import { getState, resetSimulation } from "./api";
 import Factory from "./scene/Factory";
 import Controls from "./ui/Controls";
 import Metrics from "./ui/Metrics";
@@ -7,21 +7,25 @@ import type { StateSnapshot } from "./api";
 
 // One point in the history series we’ll chart
 export type HistoryPoint = {
-  t: number;                 // sim timestamp (seconds)
-  throughput: number;        // items/sec
-  items_in_system: number;   // WIP
-  avg_utilization: number;   // 0..1
+  t: number;               // sim timestamp (seconds)
+  throughput: number;      // items/sec
+  items_in_system: number; // WIP
+  avg_utilization: number; // 0..1
 };
 
-const HISTORY_MAX = 600; // keep ~10 minutes if WS emits every 1s; trim beyond this
+// we sample ~every 5s → keep ~10 minutes => 120 points
+const HISTORY_MAX = 120;
+const SAMPLE_MS = 5000;
 
 export default function App() {
   const [snapshot, setSnapshot] = useState<StateSnapshot | null>(null);
   const [history, setHistory] = useState<HistoryPoint[]>([]);
   const [focusedMachineId, setFocusedMachineId] = useState<number | null>(null);
+  const [chartsKey, setChartsKey] = useState(0); // force Metrics remount on reset
 
   const wsRef = useRef<WebSocket | null>(null);
   const pollRef = useRef<number | null>(null);
+  const lastSampleRef = useRef<number>(0);
 
   // direct to backend in dev, same-origin in prod
   const wsUrl = useRef(
@@ -30,9 +34,13 @@ export default function App() {
       : `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws/state`
   ).current;
 
-  // Central place to apply a new snapshot and append a history point
+  // Central place to apply a new snapshot and append a history point (throttled)
   const applySnapshot = (s: StateSnapshot) => {
     setSnapshot(s);
+
+    const now = Date.now();
+    if (now - lastSampleRef.current < SAMPLE_MS) return;
+    lastSampleRef.current = now;
 
     const avgUtil =
       s.machines.length > 0
@@ -44,12 +52,11 @@ export default function App() {
         ...prev,
         {
           t: s.timestamp,
-          throughput: s.throughput, // already items/sec from backend
+          throughput: s.throughput,
           items_in_system: s.items_in_system,
           avg_utilization: avgUtil,
         },
       ];
-      // trim to max length
       if (next.length > HISTORY_MAX) next.splice(0, next.length - HISTORY_MAX);
       return next;
     });
@@ -61,10 +68,8 @@ export default function App() {
       try {
         const s = await getState();
         applySnapshot(s);
-      } catch (e) {
-        console.error("poll error", e);
-      }
-    }, 1000);
+      } catch {}
+    }, SAMPLE_MS);
   };
 
   const clearPolling = () => {
@@ -102,8 +107,7 @@ export default function App() {
         setPolling();
         setTimeout(connectWS, 2000); // backoff & reconnect
       };
-    } catch (e) {
-      console.error("ws connect failed", e);
+    } catch {
       setPolling();
     }
   };
@@ -113,12 +117,25 @@ export default function App() {
     connectWS();
     getState().then(applySnapshot).catch(() => {});
     return () => {
-      if (wsRef.current) wsRef.current.close();
+      wsRef.current?.close();
       clearPolling();
     };
   }, []);
 
   const isRunning = !!snapshot?.running;
+
+  // NEW: full reset flow (backend + charts)
+  const handleReset = async () => {
+    try {
+      await resetSimulation();    // resets & pauses on backend
+      setHistory([]);             // clear throughput history
+      setChartsKey((k) => k + 1); // clear Metrics' local utilization history
+      // Prime once so UI shows fresh zeroed snapshot immediately
+      getState().then(applySnapshot).catch(() => {});
+    } catch (e) {
+      console.error("reset failed", e);
+    }
+  };
 
   const appStyle: React.CSSProperties = {
     height: "100vh",
@@ -149,15 +166,6 @@ export default function App() {
     overflow: "auto",
   };
 
-  const refreshOnce = async () => {
-    try {
-      const s = await getState();
-      applySnapshot(s);
-    } catch (e) {
-      console.error(e);
-    }
-  };
-
   return (
     <div style={appStyle}>
       <div style={vizStyle}>
@@ -170,10 +178,11 @@ export default function App() {
 
       <div style={panelsStyle}>
         <div style={{ ...card, flex: "1 1 0", minWidth: 520 }}>
-          <Controls onRefresh={refreshOnce} isRunning={isRunning} />
+          <Controls onReset={handleReset} isRunning={isRunning} />
         </div>
         <div style={{ ...card, flex: "0 0 34%", minWidth: 320 }}>
-          <Metrics snapshot={snapshot as any} history={history} />
+          {/* key forces Metrics to drop its internal rolling arrays */}
+          <Metrics key={chartsKey} snapshot={snapshot as any} history={history} />
         </div>
       </div>
     </div>
